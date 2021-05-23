@@ -17,13 +17,16 @@ package requester
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,6 +84,7 @@ type Work struct {
 	// DisableRedirects is an option to prevent the following of HTTP redirects
 	DisableRedirects bool
 
+	Verbose bool
 	// Output represents the output type. If "csv" is provided, the
 	// output will be dumped as a csv stream.
 	Output string
@@ -131,9 +135,7 @@ func (b *Work) Run() {
 
 func (b *Work) Stop() {
 	// Send stop signal so that workers can stop gracefully.
-	for i := 0; i < b.C; i++ {
-		b.stopCh <- struct{}{}
-	}
+	close(b.stopCh)
 }
 
 func (b *Work) Finish() {
@@ -144,7 +146,7 @@ func (b *Work) Finish() {
 	b.report.finalize(total)
 }
 
-func (b *Work) makeRequest(c *http.Client) {
+func (b *Work) makeRequest(stopCh chan struct{}, c *http.Client) {
 	s := now()
 	var size int64
 	var code int
@@ -153,6 +155,9 @@ func (b *Work) makeRequest(c *http.Client) {
 	var req *http.Request
 	if b.RequestFunc != nil {
 		req = b.RequestFunc()
+		if req == nil {
+			return
+		}
 	} else {
 		req = cloneRequest(b.Request, b.RequestBody)
 	}
@@ -181,12 +186,32 @@ func (b *Work) makeRequest(c *http.Client) {
 			resStart = now()
 		},
 	}
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
+	req = req.WithContext(ctx)
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-doneCh:
+			return
+		}
+	}()
+
+	if b.Verbose {
+		printRequest(req)
+	}
 	resp, err := c.Do(req)
 	if err == nil {
 		size = resp.ContentLength
 		code = resp.StatusCode
-		io.Copy(ioutil.Discard, resp.Body)
+		if b.Verbose {
+			printResponse(resp)
+		} else {
+			io.Copy(ioutil.Discard, resp.Body)
+		}
 		resp.Body.Close()
 	}
 	t := now()
@@ -226,7 +251,7 @@ func (b *Work) runWorker(client *http.Client, n int) {
 			if b.QPS > 0 {
 				<-throttle
 			}
-			b.makeRequest(client)
+			b.makeRequest(b.stopCh, client)
 		}
 	}
 }
@@ -235,10 +260,14 @@ func (b *Work) runWorkers() {
 	var wg sync.WaitGroup
 	wg.Add(b.C)
 
+	var serverName string
+	if b.Request != nil {
+		serverName = b.Request.Host
+	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
-			ServerName:         b.Request.Host,
+			ServerName:         serverName,
 		},
 		MaxIdleConnsPerHost: min(b.C, maxIdleConn),
 		DisableCompression:  b.DisableCompression,
@@ -284,4 +313,33 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func printRequest(r *http.Request) {
+	if r == nil {
+		return
+	}
+	fmt.Println("> Method: ", r.Method)
+	fmt.Println("> URL: ", r.URL)
+	fmt.Println("> Proto: ", r.Proto)
+	printHeader(r.Header)
+	if r.Body != nil {
+		body, _ := ioutil.ReadAll(r.Body)
+		if len(body) > 0 {
+			fmt.Println("> Body: ", string(body))
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+	}
+	fmt.Println()
+}
+
+func printResponse(r *http.Response) {
+	body, _ := ioutil.ReadAll(r.Body)
+	fmt.Println(string(body))
+}
+
+func printHeader(h http.Header) {
+	for k, v := range h {
+		fmt.Printf("> %v: %v\n", k, strings.Join(v, ";"))
+	}
 }

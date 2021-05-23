@@ -16,8 +16,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math"
 	"net/http"
@@ -48,6 +53,8 @@ var (
 	authHeader  = flag.String("a", "", "")
 	hostHeader  = flag.String("host", "", "")
 	userAgent   = flag.String("U", "", "")
+	file        = flag.String("f", "", "")
+	verbose     = flag.Bool("v", false, "")
 
 	output = flag.String("o", "", "")
 
@@ -92,6 +99,9 @@ Options:
   -a  Basic authentication, username:password.
   -x  HTTP Proxy address as host:port.
   -h2 Enable HTTP/2.
+  -f  Read  args from file, if file is a single dash ('-'),  reads from the standard input. 
+      Support file filed: [-H Custom HTTP header] [-d HTTP request body] [url]
+  -v  Verbose output.
 
   -host	HTTP Host header.
 
@@ -112,9 +122,6 @@ func main() {
 	flag.Var(&hs, "H", "")
 
 	flag.Parse()
-	if flag.NArg() < 1 {
-		usageAndExit("")
-	}
 
 	runtime.GOMAXPROCS(*cpus)
 	num := *n
@@ -137,7 +144,6 @@ func main() {
 		}
 	}
 
-	url := flag.Args()[0]
 	method := strings.ToUpper(*m)
 
 	// set content-type
@@ -191,20 +197,6 @@ func main() {
 		}
 	}
 
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		usageAndExit(err.Error())
-	}
-	req.ContentLength = int64(len(bodyAll))
-	if username != "" || password != "" {
-		req.SetBasicAuth(username, password)
-	}
-
-	// set host header if set
-	if *hostHeader != "" {
-		req.Host = *hostHeader
-	}
-
 	ua := header.Get("User-Agent")
 	if ua == "" {
 		ua = heyUA
@@ -219,11 +211,34 @@ func main() {
 		header.Set("User-Agent", ua)
 	}
 
-	req.Header = header
+	var req *http.Request
+	var requestFunc func() *http.Request
+	var url string
+	if flag.NArg() > 0 {
+		url = flag.Args()[0]
+	}
+	if *file != "" {
+		var f *os.File
+		if *file == "-" {
+			f = os.Stdin
+		} else {
+			var err error
+			f, err = os.Open(*file)
+			if err != nil {
+				errAndExit(err.Error())
+			}
+		}
+		reader := bufio.NewReader(f)
+		ch := readerToChannel(reader)
+		requestFunc = createRequestFunc(header, *hostHeader, method, username, password, bodyAll, url, ch)
+	} else {
+		req = createRequest(header, *hostHeader, method, username, password, bodyAll, url)
+	}
 
 	w := &requester.Work{
 		Request:            req,
 		RequestBody:        bodyAll,
+		RequestFunc:        requestFunc,
 		N:                  num,
 		C:                  conc,
 		QPS:                q,
@@ -233,8 +248,10 @@ func main() {
 		DisableRedirects:   *disableRedirects,
 		H2:                 *h2,
 		ProxyAddr:          proxyURL,
+		Verbose:            *verbose,
 		Output:             *output,
 	}
+
 	w.Init()
 
 	c := make(chan os.Signal, 1)
@@ -286,4 +303,128 @@ func (h *headerSlice) String() string {
 func (h *headerSlice) Set(value string) error {
 	*h = append(*h, value)
 	return nil
+}
+
+type Request struct {
+	header http.Header
+	url    string
+	body   []byte
+}
+
+func createRequestFunc(header http.Header, hostHeader, method, username, password string, body []byte, url string, ch <-chan Request) func() *http.Request {
+	requestFunc := func() *http.Request {
+		request, ok := <-ch
+		if ok {
+			var h http.Header
+			if len(request.header) > 0 {
+				h = mergeHeader(header, request.header)
+			}
+			if request.url != "" {
+				url = request.url
+			}
+			if len(request.body) > 0 {
+				body = request.body
+			}
+
+			return createRequest(h, hostHeader, method, username, password, body, url)
+		}
+		return nil
+	}
+	return requestFunc
+}
+
+func createRequest(header http.Header, hostHeader, method, username, password string, body []byte, url string) *http.Request {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		errAndExit(err.Error())
+	}
+	req.ContentLength = int64(len(body))
+	if username != "" || password != "" {
+		req.SetBasicAuth(username, password)
+	}
+
+	// set host header if set
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
+
+	req.Header = header
+	if len(body) > 0 {
+		req.Body = ioutil.NopCloser(bytes.NewReader(body))
+	}
+
+	return req
+}
+
+func parseRequest(args []string) (r Request, err error) {
+	if len(args) == 0 {
+		err = errors.New("no args")
+		return
+	}
+
+	flagSet := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	var hs headerSlice
+	flagSet.Var(&hs, "H", "")
+	body := flagSet.String("d", "", "")
+	err = flagSet.Parse(args)
+	if err != nil {
+		return
+	}
+	header := make(http.Header)
+	for _, h := range hs {
+		match, err := parseInputWithRegexp(h, headerRegexp)
+		if err != nil {
+			return r, err
+		}
+		header.Set(match[1], match[2])
+	}
+
+	var url string
+	if flagSet.NArg() > 0 {
+		url = flagSet.Args()[0]
+	}
+	r = Request{
+		header: header,
+		url:    url,
+		body:   []byte(*body),
+	}
+
+	return
+}
+
+func readerToChannel(reader io.Reader) <-chan Request {
+	ch := make(chan Request, 100)
+	go func() {
+		r := csv.NewReader(reader)
+		r.Comma = ' '
+		// variable number of fields
+		r.FieldsPerRecord = -1
+		r.TrimLeadingSpace = true
+		for {
+			record, err := r.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				errAndExit("read file error" + err.Error())
+			}
+
+			request, err := parseRequest(record)
+			if err != nil {
+				usageAndExit(err.Error())
+			}
+			ch <- request
+		}
+		close(ch)
+	}()
+	return ch
+}
+
+func mergeHeader(h1, h2 http.Header) http.Header {
+	h := h1.Clone()
+	for k, v := range h2 {
+		h[k] = v
+	}
+
+	return h
 }
