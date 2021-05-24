@@ -127,6 +127,7 @@ func main() {
 
 	num := *n
 	conc := *c
+	// Debug mode only execute one request.
 	if *debug {
 		num = 1
 		conc = 1
