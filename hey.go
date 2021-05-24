@@ -54,7 +54,7 @@ var (
 	hostHeader  = flag.String("host", "", "")
 	userAgent   = flag.String("U", "", "")
 	file        = flag.String("f", "", "")
-	verbose     = flag.Bool("v", false, "")
+	debug       = flag.Bool("g", false, "")
 
 	output = flag.String("o", "", "")
 
@@ -100,8 +100,8 @@ Options:
   -x  HTTP Proxy address as host:port.
   -h2 Enable HTTP/2.
   -f  Read  args from file, if file is a single dash ('-'),  reads from the standard input. 
-      Support file filed: [-H Custom HTTP header] [-d HTTP request body] [url]
-  -v  Verbose output.
+      Support file args: [-H Custom HTTP header] [-d HTTP request body] [url]
+  -g  Debug mod. Show request and response. Only execute one request.
 
   -host	HTTP Host header.
 
@@ -124,8 +124,13 @@ func main() {
 	flag.Parse()
 
 	runtime.GOMAXPROCS(*cpus)
+
 	num := *n
 	conc := *c
+	if *debug {
+		num = 1
+		conc = 1
+	}
 	q := *q
 	dur := *z
 
@@ -248,7 +253,7 @@ func main() {
 		DisableRedirects:   *disableRedirects,
 		H2:                 *h2,
 		ProxyAddr:          proxyURL,
-		Verbose:            *verbose,
+		Debug:              *debug,
 		Output:             *output,
 	}
 

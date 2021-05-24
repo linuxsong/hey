@@ -84,7 +84,7 @@ type Work struct {
 	// DisableRedirects is an option to prevent the following of HTTP redirects
 	DisableRedirects bool
 
-	Verbose bool
+	Debug bool
 	// Output represents the output type. If "csv" is provided, the
 	// output will be dumped as a csv stream.
 	Output string
@@ -200,14 +200,14 @@ func (b *Work) makeRequest(stopCh chan struct{}, c *http.Client) {
 		}
 	}()
 
-	if b.Verbose {
+	if b.Debug {
 		printRequest(req)
 	}
 	resp, err := c.Do(req)
 	if err == nil {
 		size = resp.ContentLength
 		code = resp.StatusCode
-		if b.Verbose {
+		if b.Debug {
 			printResponse(resp)
 		} else {
 			io.Copy(ioutil.Discard, resp.Body)
