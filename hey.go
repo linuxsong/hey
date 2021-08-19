@@ -99,9 +99,9 @@ Options:
   -a  Basic authentication, username:password.
   -x  HTTP Proxy address as host:port.
   -h2 Enable HTTP/2.
-  -f  Read  args from file, if file is a single dash ('-'),  reads from the standard input. 
-      Support file args: [-H Custom HTTP header] [-d HTTP request body] [url]
-  -g  Debug mod. Show request and response. Only execute one request.
+  -f  Read  options from file, if file is a single dash ('-'),  reads from the standard input. 
+      Support file options: [-H Custom HTTP header] [-d HTTP request body] [url]
+  -g  Debug mod. Do the first request and print the response then exit.
 
   -host	HTTP Host header.
 
@@ -320,21 +320,21 @@ type Request struct {
 func createRequestFunc(header http.Header, hostHeader, method, username, password string, body []byte, url string, ch <-chan Request) func() *http.Request {
 	requestFunc := func() *http.Request {
 		request, ok := <-ch
-		if ok {
-			var h http.Header
-			if len(request.header) > 0 {
-				h = mergeHeader(header, request.header)
-			}
-			if request.url != "" {
-				url = request.url
-			}
-			if len(request.body) > 0 {
-				body = request.body
-			}
-
-			return createRequest(h, hostHeader, method, username, password, body, url)
+		if !ok {
+			return nil
 		}
-		return nil
+		var h http.Header
+		if len(request.header) > 0 {
+			h = mergeHeader(header, request.header)
+		}
+		if request.url != "" {
+			url = request.url
+		}
+		if len(request.body) > 0 {
+			body = request.body
+		}
+
+		return createRequest(h, hostHeader, method, username, password, body, url)
 	}
 	return requestFunc
 }
@@ -395,7 +395,7 @@ func parseRequest(args []string) (r Request, err error) {
 		body:   []byte(*body),
 	}
 
-	return
+	return r, err
 }
 
 func readerToChannel(reader io.Reader) <-chan Request {
