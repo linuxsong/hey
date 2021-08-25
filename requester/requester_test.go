@@ -17,6 +17,7 @@ package requester
 import (
 	"bytes"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -65,6 +66,41 @@ func TestQps(t *testing.T) {
 	time.AfterFunc(time.Second, func() {
 		if count > 2 {
 			t.Errorf("Expected to work at most 2 times, found %v", count)
+		}
+		wg.Done()
+	})
+	go w.Run()
+	wg.Wait()
+}
+func TestRampupQps(t *testing.T) {
+	var wg sync.WaitGroup
+	var count int64
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(950 * time.Millisecond)
+		atomic.AddInt64(&count, int64(1))
+	}
+	server := httptest.NewServer(http.HandlerFunc(handler))
+	defer server.Close()
+
+	req, _ := http.NewRequest("GET", server.URL, nil)
+	w := &Work{
+		Request:         req,
+		N:               math.MaxInt64,
+		RampupDuration:  4 * time.Second,
+		RampupStepCount: 2,
+		C:               10,
+	}
+	wg.Add(3)
+	time.AfterFunc(1*time.Second, func() {
+		if count != 5 {
+			t.Errorf("Expected to work at most 5 times, found %v", count)
+		}
+		wg.Done()
+	})
+	time.AfterFunc(3000*time.Millisecond, func() {
+		if count != 20 {
+			t.Errorf("Expected to work at most 20 times, found %v", count)
 		}
 		wg.Done()
 	})

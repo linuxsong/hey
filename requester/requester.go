@@ -72,6 +72,10 @@ type Work struct {
 	// Timeout in seconds.
 	Timeout int
 
+	RampupDuration time.Duration
+
+	RampupStepCount int
+
 	// Qps is the rate limit in queries per second.
 	QPS float64
 
@@ -96,10 +100,11 @@ type Work struct {
 	// Writer is where results will be written. If nil, results are written to stdout.
 	Writer io.Writer
 
-	initOnce sync.Once
-	results  chan *result
-	stopCh   chan struct{}
-	start    time.Duration
+	initOnce  sync.Once
+	results   chan *result
+	stopCh    chan struct{}
+	start     time.Duration
+	workersCh chan struct{}
 
 	report *report
 }
@@ -116,6 +121,7 @@ func (b *Work) Init() {
 	b.initOnce.Do(func() {
 		b.results = make(chan *result, min(b.C*1000, maxResult))
 		b.stopCh = make(chan struct{}, b.C)
+		b.workersCh = make(chan struct{}, b.C)
 	})
 }
 
@@ -256,9 +262,40 @@ func (b *Work) runWorker(client *http.Client, n int) {
 	}
 }
 
+func (b *Work) createNWorks(n int) {
+	for i := 0; i < n; i++ {
+		b.workersCh <- struct{}{}
+	}
+}
+func (b *Work) createWorks() {
+	if b.RampupDuration <= 0 {
+		b.createNWorks(b.C)
+		close(b.workersCh)
+		return
+	}
+
+	b.createRampupWorkers()
+}
+
+func (b *Work) createRampupWorkers() {
+	if b.RampupStepCount > 0 {
+		count := b.C / b.RampupStepCount
+		duration := time.Duration(int(b.RampupDuration) / b.RampupStepCount)
+		for i := 0; i < b.RampupStepCount; i++ {
+			b.createNWorks(count)
+			time.Sleep(duration)
+		}
+	} else {
+		duration := time.Duration(b.C / int(b.RampupDuration))
+		for i := 0; i < b.C; i++ {
+			b.createNWorks(1)
+			time.Sleep(duration)
+		}
+	}
+}
+
 func (b *Work) runWorkers() {
 	var wg sync.WaitGroup
-	wg.Add(b.C)
 
 	var serverName string
 	if b.Request != nil {
@@ -281,12 +318,19 @@ func (b *Work) runWorkers() {
 	}
 	client := &http.Client{Transport: tr, Timeout: time.Duration(b.Timeout) * time.Second}
 
-	// Ignore the case where b.N % b.C != 0.
-	for i := 0; i < b.C; i++ {
-		go func() {
-			b.runWorker(client, b.N/b.C)
-			wg.Done()
-		}()
+	go b.createWorks()
+Loop:
+	for {
+		select {
+		case <-b.stopCh:
+			break Loop
+		case <-b.workersCh:
+			wg.Add(1)
+			go func() {
+				b.runWorker(client, b.N/b.C)
+				wg.Done()
+			}()
+		}
 	}
 	wg.Wait()
 }
