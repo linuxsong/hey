@@ -282,11 +282,15 @@ func (b *Work) createRampupWorkers() {
 		count := b.C / b.RampupStepCount
 		duration := time.Duration(int(b.RampupDuration) / b.RampupStepCount)
 		for i := 0; i < b.RampupStepCount; i++ {
+			if i == b.RampupStepCount-1 {
+				count += b.C % b.RampupStepCount
+			}
 			b.createNWorks(count)
 			time.Sleep(duration)
 		}
 	} else {
-		duration := time.Duration(b.C / int(b.RampupDuration))
+		// linear ramp-up
+		duration := time.Duration(int(b.RampupDuration) / b.C)
 		for i := 0; i < b.C; i++ {
 			b.createNWorks(1)
 			time.Sleep(duration)
