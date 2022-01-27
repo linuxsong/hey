@@ -17,7 +17,6 @@ package requester
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -192,23 +191,26 @@ func (b *Work) makeRequest(stopCh chan struct{}, c *http.Client) {
 			resStart = now()
 		},
 	}
-	ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
-	req = req.WithContext(ctx)
-	doneCh := make(chan struct{})
-	defer close(doneCh)
+	// ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
+	// httptrace.WithClientTrace(req.Context(), trace)
+	// ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
+	// req = req.WithContext(ctx)
+	// doneCh := make(chan struct{})
+	// defer close(doneCh)
 
-	go func() {
-		select {
-		case <-stopCh:
-			cancel()
-		case <-doneCh:
-			return
-		}
-	}()
+	// go func() {
+	// 	select {
+	// 	case <-stopCh:
+	// 		cancel()
+	// 	case <-doneCh:
+	// 		return
+	// 	}
+	// }()
 
 	if b.Debug {
 		printRequest(req)
 	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	resp, err := c.Do(req)
 	if err == nil {
 		size = resp.ContentLength
@@ -262,14 +264,14 @@ func (b *Work) runWorker(client *http.Client, n int) {
 	}
 }
 
-func (b *Work) createNWorks(n int) {
+func (b *Work) createWorkerCh(n int) {
 	for i := 0; i < n; i++ {
 		b.workersCh <- struct{}{}
 	}
 }
-func (b *Work) createWorks() {
+func (b *Work) createWorkers() {
 	if b.RampupDuration <= 0 {
-		b.createNWorks(b.C)
+		b.createWorkerCh(b.C)
 		close(b.workersCh)
 		return
 	}
@@ -285,14 +287,14 @@ func (b *Work) createRampupWorkers() {
 			if i == b.RampupStepCount-1 {
 				count += b.C % b.RampupStepCount
 			}
-			b.createNWorks(count)
+			b.createWorkerCh(count)
 			time.Sleep(duration)
 		}
 	} else {
 		// linear ramp-up
 		duration := time.Duration(int(b.RampupDuration) / b.C)
 		for i := 0; i < b.C; i++ {
-			b.createNWorks(1)
+			b.createWorkerCh(1)
 			time.Sleep(duration)
 		}
 	}
@@ -322,7 +324,7 @@ func (b *Work) runWorkers() {
 	}
 	client := &http.Client{Transport: tr, Timeout: time.Duration(b.Timeout) * time.Second}
 
-	go b.createWorks()
+	go b.createWorkers()
 Loop:
 	for {
 		select {
