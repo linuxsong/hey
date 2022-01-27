@@ -88,7 +88,8 @@ Options:
 
   -rt Ramp-up time.
       Examples: -rt 10s -rt 3m
-  -sc Ramp-up step count . The Ramp-up target workers is the number of -c option value
+  -sc Ramp-up step count . The Ramp-up target workers is the number of -c option value. 
+      If count is ignored, use linear ramp-up.
 
   -o  Output type. If none provided, a summary is printed.
       "csv" is the only supported alternative. Dumps the response

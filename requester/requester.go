@@ -119,7 +119,7 @@ func (b *Work) writer() io.Writer {
 func (b *Work) Init() {
 	b.initOnce.Do(func() {
 		b.results = make(chan *result, min(b.C*1000, maxResult))
-		b.stopCh = make(chan struct{}, b.C)
+		b.stopCh = make(chan struct{})
 		b.workersCh = make(chan struct{}, b.C)
 	})
 }
@@ -141,6 +141,7 @@ func (b *Work) Run() {
 func (b *Work) Stop() {
 	// Send stop signal so that workers can stop gracefully.
 	close(b.stopCh)
+	close(b.workersCh)
 }
 
 func (b *Work) Finish() {
@@ -191,21 +192,6 @@ func (b *Work) makeRequest(stopCh chan struct{}, c *http.Client) {
 			resStart = now()
 		},
 	}
-	// ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
-	// httptrace.WithClientTrace(req.Context(), trace)
-	// ctx, cancel := context.WithCancel(httptrace.WithClientTrace(req.Context(), trace))
-	// req = req.WithContext(ctx)
-	// doneCh := make(chan struct{})
-	// defer close(doneCh)
-
-	// go func() {
-	// 	select {
-	// 	case <-stopCh:
-	// 		cancel()
-	// 	case <-doneCh:
-	// 		return
-	// 	}
-	// }()
 
 	if b.Debug {
 		printRequest(req)
@@ -272,7 +258,6 @@ func (b *Work) createWorkerCh(n int) {
 func (b *Work) createWorkers() {
 	if b.RampupDuration <= 0 {
 		b.createWorkerCh(b.C)
-		close(b.workersCh)
 		return
 	}
 
@@ -330,7 +315,10 @@ Loop:
 		select {
 		case <-b.stopCh:
 			break Loop
-		case <-b.workersCh:
+		case _, ok := <-b.workersCh:
+			if !ok {
+				break
+			}
 			wg.Add(1)
 			go func() {
 				b.runWorker(client, b.N/b.C)
