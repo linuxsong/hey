@@ -141,7 +141,6 @@ func (b *Work) Run() {
 func (b *Work) Stop() {
 	// Send stop signal so that workers can stop gracefully.
 	close(b.stopCh)
-	close(b.workersCh)
 }
 
 func (b *Work) Finish() {
@@ -258,10 +257,11 @@ func (b *Work) createWorkerCh(n int) {
 func (b *Work) createWorkers() {
 	if b.RampupDuration <= 0 {
 		b.createWorkerCh(b.C)
-		return
+	} else {
+		b.createRampupWorkers()
 	}
 
-	b.createRampupWorkers()
+	close(b.workersCh)
 }
 
 func (b *Work) createRampupWorkers() {
@@ -317,7 +317,7 @@ Loop:
 			break Loop
 		case _, ok := <-b.workersCh:
 			if !ok {
-				break
+				break Loop
 			}
 			wg.Add(1)
 			go func() {

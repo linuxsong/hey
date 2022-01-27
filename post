@@ -1,0 +1,3 @@
+-H "X-00000:hehe00000"  -d "a=0000000&b=0000" https://httpbin.topbyte.cn/post
+-H "X-22222:hehe22222" -H "x2-2222222:hehe22222" -d "a=222222&b=22222" https://httpbin.topbyte.cn/post
+-H "X-333333:hehe33333" -H "x2-3333333:hehe33333" -d "a=333333&b=33333" https://httpbin.topbyte.cn/post
